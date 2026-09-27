@@ -32,7 +32,9 @@ class Recorder:
 
 def resource(outcome="ok", *, per_second=100.0, burst=100, **kw):
     handler = Recorder(outcome)
-    res = RegisterResource(RateLimiter(per_second, burst), handler, record_secret=SECRET, **kw)
+    # Frozen clock: nothing refills between requests, so retry_after_ms is exact.
+    limiter = RateLimiter(per_second, burst, clock=lambda: 0.0)
+    res = RegisterResource(limiter, handler, record_secret=SECRET, **kw)
     return res, handler
 
 
