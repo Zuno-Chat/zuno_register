@@ -9,14 +9,15 @@ Synapse module gating signup behind proof of inbox control: the app posts an ema
 ## Request flow
 
 1. Route: POST at the exact path, else 404 `M_UNRECOGNIZED` (any other verb or sub-path).
-2. `Content-Type` must be `application/json`, else 415 `M_UNKNOWN`. A browser sends cross-site JSON only after a CORS preflight, which this route never answers; a "simple" type would let any web page spend its visitors' per-IP allowance. The native app never preflights.
-3. Body over 1 KB is 413 `M_TOO_LARGE`. Bad JSON, any key but `email`, or a bad address is 400 `M_INVALID_PARAM`. An address is a dot-atom local part and a domain of at least two labels, trimmed, as typed. Its record key is an HMAC-SHA256 of `lower(local@domain)`, any `+tag` dropped, under a key derived from Synapse's `macaroon_secret_key`: a Redis dump alone cannot say whether a given address has a record, and one inbox cannot mint itself a fresh record per spelling.
-4. Per-IP token bucket (in memory, IPv6 by /64, via `request.getClientAddress()`, so the listener's `x_forwarded` applies). Over: 429 `M_LIMIT_EXCEEDED` with `retry_after_ms`. Counted before the registrar runs, a `400` never spends it.
-5. Redis `sends:{key}`: INCR, window set atomically on the first count to `token_ttl`. Over `sends_per_address`: DECR and the silent `202 {}`, no send.
-6. Redis `daily:{UTC date}` when `daily_cap` > 0: INCR, 48 h window. Over: DECR and 429 `M_LIMIT_EXCEEDED`. Checked after the address counter and never spent by a refused request, so a drained cap cannot be used to spend a stranger's record.
-7. Redis `code:{key}`: a code that is there and that the store still reports valid is reused. Otherwise a fresh code is minted with `create_registration_token(code, 1, expiry)` (one retry on collision) and stored with `SET NX EX token_ttl`; a lost race takes the winner's code and deletes ours from the store. A consumed code is replaced outright.
-8. Brevo send, one attempt: a send is not idempotent. Failure refunds both counters and answers 502 `M_UNKNOWN`; the code stays, so the next attempt resends it.
-9. `202 {}`, `Cache-Control: no-store`. Byte-identical whether a mail went out or the address was over its limit.
+2. Any request with an `Origin` header is 403 `M_FORBIDDEN`. A browser sends one on every POST; the native app never does. Synapse's root resource answers every CORS preflight with `Access-Control-Allow-Origin: *`, so without this any web page could spend its visitors' per-IP allowance, and the daily cap, on strangers' addresses.
+3. `Content-Type` must be `application/json`, else 415 `M_UNKNOWN`.
+4. Body over 1 KB is 413 `M_TOO_LARGE`. Bad JSON, any key but `email`, or a bad address is 400 `M_INVALID_PARAM`. An address is a dot-atom local part and a domain of at least two labels, trimmed, as typed. Its record key is an HMAC-SHA256 of `lower(local@domain)`, any `+tag` dropped, under a key derived from Synapse's `macaroon_secret_key`: a Redis dump alone cannot say whether a given address has a record, and one inbox cannot mint itself a fresh record per spelling.
+5. Per-IP token bucket (in memory, IPv6 by /64, via `request.getClientAddress()`, so the listener's `x_forwarded` applies). Over: 429 `M_LIMIT_EXCEEDED` with `retry_after_ms`. Counted before the registrar runs, a `400` never spends it.
+6. Redis `sends:{key}`: INCR, window set atomically on the first count to `token_ttl`. Over `sends_per_address`: DECR and the silent `202 {}`, no send.
+7. Redis `daily:{UTC date}` when `daily_cap` > 0: INCR, 48 h window. Over: DECR and 429 `M_LIMIT_EXCEEDED`. Checked after the address counter and never spent by a refused request, so a drained cap cannot be used to spend a stranger's record.
+8. Redis `code:{key}`: a code that is there and that the store still reports valid is reused. Otherwise a fresh code is minted with `create_registration_token(code, 1, expiry)` (one retry on collision) and stored with `SET NX EX token_ttl`; a lost race takes the winner's code and deletes ours from the store. A consumed code is replaced outright.
+9. Brevo send, one attempt: a send is not idempotent. Failure refunds both counters and answers 502 `M_UNKNOWN`; the code stays, so the next attempt resends it.
+10. `202 {}`, not cacheable. Byte-identical whether a mail went out or the address was over its limit.
 
 The 202 for a limited address is truthful: the code it refers to is the one already in the inbox. A `429` there would confirm to anyone probing that the address was asked for recently. The timing still differs (no Brevo call); the per-IP limit blunts trials.
 
@@ -56,11 +57,11 @@ modules:
 
 ## Client contract
 
-Codes are ten characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no `I`/`O`/`0`/`1`). The app filters its input field to that alphabet and renders the TTL as a literal "24 hours"; widening the alphabet or changing `token_ttl` needs a client release alongside. The app must send `Content-Type: application/json`. It retries only `5xx`; every `4xx` is final. A silent 202 with nothing in the inbox means the address has used its sends this window, or a mail Brevo accepted and never delivered; the module cannot tell the two apart.
+Codes are ten characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no `I`/`O`/`0`/`1`). The app filters its input field to that alphabet and renders the TTL as a literal "24 hours"; widening the alphabet or changing `token_ttl` needs a client release alongside. The app must send `Content-Type: application/json` and no `Origin` header. It retries only `5xx`; every `4xx` is final. A silent 202 with nothing in the inbox means the address has used its sends this window, or a mail Brevo accepted and never delivered; the module cannot tell the two apart.
 
 ## Metrics
 
-`zuno_register_requests_total{result}` with `result` in `ok|resent|email_limited|ip_limited|global_limited|invalid|too_large|unsupported_media_type|redis_error|store_error|brevo_error`; `zuno_register_upstream_requests_total{api,code}`, `zuno_register_upstream_seconds{api}`, `zuno_register_upstream_errors_total{api,reason}` with `api` in `brevo|redis|store`. Synapse's `synapse_http_server_*` label the route by class name `RegisterResource`.
+`zuno_register_requests_total{result}` with `result` in `ok|resent|email_limited|ip_limited|global_limited|browser|invalid|too_large|unsupported_media_type|redis_error|store_error|brevo_error`; `zuno_register_upstream_requests_total{api,code}`, `zuno_register_upstream_seconds{api}`, `zuno_register_upstream_errors_total{api,reason}` with `api` in `brevo|redis|store`. Synapse's `synapse_http_server_*` label the route by class name `RegisterResource`.
 
 ## Tests
 

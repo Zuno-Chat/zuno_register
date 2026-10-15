@@ -75,8 +75,6 @@ class Registrar:
             code, reused = await self._code(f"code:{key}")
             await self._mailer.send(addr, code, int(self._cfg.token_ttl // 3600))
         except Exception as e:
-            # Twisted's CancelledError is an Exception, so a client that
-            # disconnects mid-flight still gets its address refunded.
             await self._refund(counted)
             if isinstance(e, RedisUnavailable):
                 raise Unavailable("redis") from e

@@ -1,4 +1,4 @@
-"""Request glue: route → content type → body → address → per-IP limit → registrar → 202.
+"""Request glue: route → origin → content type → body → address → per-IP limit → registrar → 202.
 
 Public and unauthenticated by nature: the caller has no account yet. Errors
 are raised as SynapseError; DirectServeJsonResource renders them as Matrix
@@ -65,18 +65,18 @@ class RegisterResource(DirectServeJsonResource):
         self._record_secret = record_secret
         self._max_body = max_body
 
-    async def _async_render(self, request: Any) -> None:
+    async def _async_render(self, request: Any) -> tuple[int, dict[str, Any]]:
         # Overrides the per-method dispatch so an unsupported verb is a 404
         # like an unmatched path, never a 405.
-        await self._serve(request)
-
-    async def _serve(self, request: Any) -> None:
         if request.method != b"POST" or request.postpath:
             raise SynapseError(404, "Unrecognized request", Codes.UNRECOGNIZED)
 
-        # A browser sends cross-site JSON only after a CORS preflight, which
-        # this route never answers; a "simple" type would skip it and let any
-        # web page spend its visitors' per-IP allowance.
+        # Synapse's root answers every CORS preflight with Allow-Origin: *, so
+        # any web page could spend its visitors' per-IP allowance here. A
+        # browser always sends Origin on a POST; the native app never does.
+        if request.getHeader("Origin") is not None:
+            self._fail("browser", 403, "Browser requests are not accepted", Codes.FORBIDDEN)
+
         if _media_type(request.getHeader("Content-Type")) != "application/json":
             self._fail("unsupported_media_type", 415, "Content type must be application/json")
 
@@ -112,14 +112,7 @@ class RegisterResource(DirectServeJsonResource):
             self._fail(f"{e.api}_error", 502, "Registration service unavailable")
 
         REQUESTS.labels(result).inc()
-        if request._disconnected:
-            return
-        request.setResponseCode(202)
-        request.setHeader(b"Content-Type", b"application/json")
-        request.setHeader(b"Cache-Control", b"no-store")
-        request.setHeader(b"Content-Length", b"2")
-        request.write(b"{}")
-        request.finish()
+        return 202, {}
 
     def _fail(
         self, result: str, status: int, msg: str, errcode: str = Codes.UNKNOWN, **kw: Any

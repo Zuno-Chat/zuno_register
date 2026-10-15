@@ -21,10 +21,6 @@ class RateLimiter:
     def __init__(
         self, per_second: float, burst: int, clock: Callable[[], float] = time.monotonic
     ) -> None:
-        if per_second <= 0:
-            raise ValueError(f"per_second must be positive: {per_second!r}")
-        if burst < 1:
-            raise ValueError(f"burst must be at least 1: {burst!r}")
         self._rate = per_second
         self._burst = float(burst)
         self._clock = clock

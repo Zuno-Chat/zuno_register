@@ -7,7 +7,7 @@ import json
 import logging
 
 from .config import BrevoConfig
-from .upstream import NO_RETRY, Upstream, UpstreamUnavailable
+from .upstream import Upstream, UpstreamUnavailable
 
 _logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class Mailer:
         raw = json.dumps(self.payload(to, code, hours)).encode()
         try:
             response = await self._upstream.request(
-                "POST", self._url, self._headers, raw, api="brevo", retry=NO_RETRY
+                "POST", self._url, self._headers, raw, api="brevo"
             )
         except UpstreamUnavailable as e:
             raise SendFailed(e.reason) from e

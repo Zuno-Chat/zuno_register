@@ -11,9 +11,9 @@ from twisted.internet.defer import Deferred, fail, succeed
 
 from zuno_register.config import BrevoConfig, Config
 from zuno_register.mail import Mailer, SendFailed
-from zuno_register.redis import _COUNT, Records
+from zuno_register.redis import _COUNT, _UNCOUNT, Records
 from zuno_register.synapse_private import TokenStore
-from zuno_register.upstream import NO_RETRY, RetryPolicy, Upstream, UpstreamResponse
+from zuno_register.upstream import Upstream, UpstreamResponse
 
 BREVO = BrevoConfig(api_key="k", sender_email="noreply@zuno.chat")
 
@@ -69,18 +69,20 @@ class FakeConnection:
         return None if entry is None or entry[1] is None else entry[1] - self.clock()
 
     def eval(self, script: str, keys: list[str], args: list[Any]) -> Deferred[Any]:
+        (key,) = keys
+        if script == _UNCOUNT:
+            n = int(self._live(key) or 0) - 1
+            if n > 0:
+                self.data[key] = (n, self.data[key][1])
+            else:
+                self.data.pop(key, None)
+            return self._answer("eval", n)
         assert script == _COUNT
-        (key,), (window,) = keys, args
+        (window,) = args
         n = int(self._live(key) or 0) + 1
         expires = self.data[key][1] if n > 1 else self.clock() + int(window)
         self.data[key] = (n, expires)
         return self._answer("eval", n)
-
-    def decr(self, key: str, amount: int = 1) -> Deferred[Any]:
-        n = int(self._live(key) or 0) - amount
-        expires = self.data[key][1] if key in self.data else None
-        self.data[key] = (n, expires)
-        return self._answer("decr", n)
 
     def get(self, key: str) -> Deferred[Any]:
         value = self._live(key)
@@ -104,13 +106,6 @@ class FakeConnection:
             return self._answer("set", None)
         self.data[key] = (value, None if expire is None else self.clock() + expire)
         return self._answer("set", "OK")
-
-    def delete(self, key: str, *more: str) -> Deferred[Any]:
-        n = 0
-        for k in (key, *more):
-            if self.data.pop(k, None) is not None:
-                n += 1
-        return self._answer("delete", n)
 
 
 def records(conn: FakeConnection, prefix: str = "t:", timeout: float = 5.0) -> Records:
@@ -182,7 +177,7 @@ def as_mailer(fake: FakeMailer) -> Mailer:
     return cast(Mailer, fake)
 
 
-DEFAULT_REPLY = UpstreamResponse(201, "application/json", b'{"messageId":"m"}')
+DEFAULT_REPLY = UpstreamResponse(201, b'{"messageId":"m"}')
 
 
 @dataclass
@@ -192,27 +187,9 @@ class FakeUpstream:
     calls: list[dict] = field(default_factory=list)
     replies: list[UpstreamResponse | Exception] = field(default_factory=list)
 
-    async def request(
-        self,
-        method,
-        url,
-        headers,
-        body,
-        *,
-        api,
-        retry: RetryPolicy = NO_RETRY,
-        timeout: float | None = None,
-    ):
+    async def request(self, method, url, headers, body, *, api):
         self.calls.append(
-            {
-                "method": method,
-                "url": url,
-                "headers": dict(headers),
-                "body": body,
-                "api": api,
-                "retry": retry,
-                "timeout": timeout,
-            }
+            {"method": method, "url": url, "headers": dict(headers), "body": body, "api": api}
         )
         reply = self.replies.pop(0) if self.replies else DEFAULT_REPLY
         if isinstance(reply, Exception):
@@ -240,31 +217,12 @@ class FakeRequest:
         self.content = BytesIO(body)
         self._headers = {k.lower(): v for k, v in (headers or {}).items()}
         self._client = client
-        self.code = 200
-        self.response_headers: dict[str, str] = {}
-        self.written = b""
-        self.finished = False
-        self._disconnected = False
 
     def getHeader(self, name: str) -> str | None:
         return self._headers.get(name.lower())
 
     def getClientAddress(self) -> Any:
         return SimpleNamespace(host=self._client) if self._client else SimpleNamespace()
-
-    def setResponseCode(self, code: int, message: bytes | None = None) -> None:
-        self.code = code
-
-    def setHeader(self, name: bytes | str, value: bytes | str) -> None:
-        key = name.decode() if isinstance(name, bytes) else name
-        val = value.decode() if isinstance(value, bytes) else value
-        self.response_headers[key.lower()] = val
-
-    def write(self, data: bytes) -> None:
-        self.written += data
-
-    def finish(self) -> None:
-        self.finished = True
 
 
 def post(

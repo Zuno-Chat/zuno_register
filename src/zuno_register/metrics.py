@@ -12,9 +12,6 @@ UPSTREAM_SECONDS = Histogram(
     ["api"],
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
 )
-UPSTREAM_RETRIES = Counter(
-    "zuno_register_upstream_retries_total", "Retried upstream attempts", ["api"]
-)
 UPSTREAM_ERRORS = Counter(
     "zuno_register_upstream_errors_total",
     "Brevo, Redis and store calls with no usable response",

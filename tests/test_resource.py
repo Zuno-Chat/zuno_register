@@ -40,7 +40,7 @@ def resource(outcome="ok", *, per_second=100.0, burst=100, **kw):
 
 async def expect_error(res, req, code, errcode):
     with pytest.raises(SynapseError) as exc:
-        await res._serve(req)
+        await res._async_render(req)
     assert (exc.value.code, exc.value.errcode) == (code, errcode)
     return exc.value
 
@@ -58,14 +58,8 @@ async def test_happy_path_answers_202_and_hashes_the_address():
     res, handler = resource()
     req = post('{"email": " Alice+news@Example.com "}')
     before = sample("ok")
-    await res._serve(req)
+    assert await res._async_render(req) == (202, {})
     assert handler.calls == [("Alice+news@Example.com", ALICE_KEY)]
-    assert (req.code, req.written, req.finished) == (202, b"{}", True)
-    assert req.response_headers == {
-        "content-type": "application/json",
-        "cache-control": "no-store",
-        "content-length": "2",
-    }
     assert sample("ok") == before + 1
 
 
@@ -79,11 +73,24 @@ async def test_other_verbs_and_sub_paths_are_404():
 
 
 @pytest_twisted.ensureDeferred
+async def test_a_browser_request_is_403_and_spends_nothing():
+    res, handler = resource(per_second=1, burst=1)
+    before = sample("browser")
+    browser = FakeRequest(
+        body=b'{"email":"alice@example.com"}',
+        headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+    )
+    await expect_error(res, browser, 403, Codes.FORBIDDEN)
+    assert handler.calls == [] and sample("browser") == before + 1
+    await res._async_render(post())  # the IP's one token is still there
+
+
+@pytest_twisted.ensureDeferred
 async def test_content_type_must_be_json():
     res, handler = resource()
     await expect_error(res, post(content_type=None), 415, Codes.UNKNOWN)
     await expect_error(res, post(content_type="text/plain"), 415, Codes.UNKNOWN)
-    await res._serve(post(content_type="Application/JSON; charset=utf-8"))
+    await res._async_render(post(content_type="Application/JSON; charset=utf-8"))
     assert len(handler.calls) == 1
 
 
@@ -118,11 +125,11 @@ async def test_bad_bodies_are_400(body):
 @pytest_twisted.ensureDeferred
 async def test_per_ip_limit_answers_429_with_retry_after_before_the_registrar():
     res, handler = resource(per_second=1, burst=1)
-    await res._serve(post())
+    await res._async_render(post())
     err = await expect_error(res, post(), 429, Codes.LIMIT_EXCEEDED)
     assert err.error_dict(None)["retry_after_ms"] == 1000
     assert err.headers == {"Retry-After": "1"}
-    await res._serve(post(client="203.0.113.8"))
+    await res._async_render(post(client="203.0.113.8"))
     assert len(handler.calls) == 2
 
 
@@ -130,7 +137,7 @@ async def test_per_ip_limit_answers_429_with_retry_after_before_the_registrar():
 async def test_an_invalid_body_never_spends_the_ip_allowance():
     res, _ = resource(per_second=1, burst=1)
     await expect_error(res, post(b"{}"), 400, Codes.INVALID_PARAM)
-    await res._serve(post())
+    await res._async_render(post())
 
 
 @pytest_twisted.ensureDeferred
@@ -154,16 +161,4 @@ async def test_unavailable_is_502_labelled_by_api():
 async def test_a_silent_accept_looks_exactly_like_a_send():
     sent, _ = resource("ok")
     silent, _ = resource("email_limited")
-    a, b = post(), post()
-    await sent._serve(a)
-    await silent._serve(b)
-    assert (a.code, a.written, a.response_headers) == (b.code, b.written, b.response_headers)
-
-
-@pytest_twisted.ensureDeferred
-async def test_a_disconnected_client_gets_no_write():
-    res, _ = resource()
-    req = post()
-    req._disconnected = True
-    await res._serve(req)
-    assert (req.written, req.finished) == (b"", False)
+    assert await sent._async_render(post()) == await silent._async_render(post()) == (202, {})

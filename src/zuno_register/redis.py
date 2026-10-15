@@ -1,9 +1,11 @@
 """Per-address records in Redis, on Synapse's own connection.
 
-Counters are one Lua call so the window is set atomically with the first
-count; a crash between INCR and EXPIRE could otherwise leave a key that never
-expires. Every command is bounded by a timeout and any failure is a
-RedisUnavailable, which the resource answers as 502.
+A count and a refund are one Lua call each. The window is set atomically with
+the first count; a crash between INCR and EXPIRE could otherwise leave a key
+that never expires. A refund that reaches zero deletes the key in the same
+step, so a count landing in between is never deleted with it. Every command
+is bounded by a timeout and any failure is a RedisUnavailable, which the
+resource answers as 502.
 """
 
 from __future__ import annotations
@@ -21,12 +23,15 @@ from .metrics import UPSTREAM_ERRORS, UPSTREAM_SECONDS
 
 _logger = logging.getLogger(__name__)
 
-# Redis EVAL runs this fixed Lua script server-side; nothing from a request
-# reaches it except the key name and the window length.
+# Redis EVAL runs these fixed Lua scripts server-side; nothing from a request
+# reaches them except the key name and the window length.
 _COUNT = (
     "local n = redis.call('INCR', KEYS[1]) "
     "if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end "
     "return n"
+)
+_UNCOUNT = (
+    "local n = redis.call('DECR', KEYS[1]) if n <= 0 then redis.call('DEL', KEYS[1]) end return n"
 )
 
 
@@ -56,9 +61,7 @@ class Records:
 
     async def uncount(self, key: str) -> None:
         """Give a count back; at zero the key goes, so a window never survives on a refund."""
-        n = await self._run(lambda: self._conn.decr(self._prefix + key))
-        if int(n) <= 0:
-            await self._run(lambda: self._conn.delete(self._prefix + key))
+        await self._run(lambda: self._conn.eval(_UNCOUNT, [self._prefix + key], []))
 
     async def get_code(self, key: str) -> str | None:
         value = await self._run(lambda: self._conn.get(self._prefix + key))

@@ -25,9 +25,11 @@ async def test_count_starts_the_window_once_and_uncount_gives_back():
     assert conn.ttl("t:k") == 50  # the second count did not restart the window
     await r.uncount("k")
     assert conn._live("t:k") == 3 and conn.ttl("t:k") == 50
+    conn.commands.clear()
     for _ in range(3):
         await r.uncount("k")
     assert "t:k" not in conn.data
+    assert conn.commands == ["eval"] * 3  # reaching zero deletes in the same call
 
 
 @pytest_twisted.ensureDeferred

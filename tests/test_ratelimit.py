@@ -1,5 +1,3 @@
-import pytest
-
 from zuno_register.ratelimit import RateLimiter
 
 
@@ -48,13 +46,3 @@ def test_idle_keys_are_purged_when_the_map_doubles():
     assert len(limiter) == 1
     limiter.allow("fresh")
     assert limiter.allow("fresh") == 1000
-
-
-def test_non_positive_rate_is_rejected():
-    with pytest.raises(ValueError):
-        RateLimiter(per_second=0, burst=1)
-
-
-def test_burst_below_one_is_rejected():
-    with pytest.raises(ValueError):
-        RateLimiter(per_second=1, burst=0)

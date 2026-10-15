@@ -6,7 +6,7 @@ import pytest_twisted
 from conftest import BREVO, FakeUpstream, as_upstream
 
 from zuno_register.mail import Mailer, SendFailed, message
-from zuno_register.upstream import NO_RETRY, UpstreamResponse, UpstreamUnavailable
+from zuno_register.upstream import UpstreamResponse, UpstreamUnavailable
 
 
 def test_message_copy():
@@ -40,13 +40,13 @@ async def test_send_posts_once_with_the_api_key():
         "https://api.brevo.com/v3/smtp/email",
         "brevo",
     )
-    assert call["headers"]["api-key"] == "k" and call["retry"] == NO_RETRY
+    assert call["headers"]["api-key"] == "k"
     assert json.loads(call["body"])["to"] == [{"email": "a@b.io"}]
 
 
 @pytest_twisted.ensureDeferred
 async def test_a_refusal_or_outage_is_send_failed():
-    up = FakeUpstream(replies=[UpstreamResponse(400, "application/json", b'{"code":"bad"}')])
+    up = FakeUpstream(replies=[UpstreamResponse(400, b'{"code":"bad"}')])
     with pytest.raises(SendFailed):
         await Mailer(BREVO, as_upstream(up)).send("a@b.io", "CODE", 24)
     up = FakeUpstream(replies=[UpstreamUnavailable("timeout")])
